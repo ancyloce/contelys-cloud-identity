@@ -1,0 +1,30 @@
+# Identity's external routes, which Edge publishes on the application hostname (Edge's detailed
+# design, section 03; Identity's design, section 10). Every path is an exact path of
+# contracts/openapi/identity/openapi.yaml, with the method the contract gives it. No path lies under
+# /internal/: the authentication endpoint, the key set, workload tokens, lookups and the
+# back-channel logout reach Identity through Edge's internal listener and its loopback route.
+routes:
+  # Registration, sign-in and the callback are anonymous: they come before a session exists. Each
+  # operation has a route of its own, because Edge labels its metrics by route name, so the
+  # callback's failures stay apart from sign-in's redirects.
+  - paths: [/api/identity/v1/registrations]
+    methods: [POST]
+    auth: anonymous
+    traffic: authentication
+  - paths: [/api/identity/v1/session/sign-in]
+    methods: [GET]
+    auth: anonymous
+    traffic: authentication
+  - paths: [/api/identity/v1/session/callback]
+    methods: [GET]
+    auth: anonymous
+    traffic: authentication
+  # Sign-out and /me take the internal token, and sign-out ends the session that its sid names.
+  - paths: [/api/identity/v1/session/sign-out]
+    methods: [POST]
+    auth: required
+    traffic: api
+  - paths: [/api/identity/v1/me]
+    methods: [GET]
+    auth: required
+    traffic: api
