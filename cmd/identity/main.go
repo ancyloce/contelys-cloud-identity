@@ -26,6 +26,10 @@ import (
 	"github.com/ancyloce/contelys-cloud-libs-service/health"
 	"github.com/ancyloce/contelys-cloud-libs-service/telemetry"
 
+	"github.com/ancyloce/contelys-cloud-identity/internal/application/admission"
+	"github.com/ancyloce/contelys-cloud-identity/internal/application/signin"
+	"github.com/ancyloce/contelys-cloud-identity/internal/application/tokens"
+	"github.com/ancyloce/contelys-cloud-identity/internal/infrastructure/keycloak"
 	"github.com/ancyloce/contelys-cloud-identity/internal/infrastructure/postgres"
 	"github.com/ancyloce/contelys-cloud-identity/internal/infrastructure/signing"
 	"github.com/ancyloce/contelys-cloud-identity/internal/interfaces/commands"
@@ -60,6 +64,22 @@ type settings struct {
 		Internal string `yaml:"internal"`
 		Workload string `yaml:"workload"`
 	} `yaml:"signing_keys"`
+	// ApplicationOrigin is the origin of the authoring app, such as https://app.example.test, whose
+	// paths a sign-in returns to and whose callback Keycloak redirects to.
+	ApplicationOrigin string `yaml:"application_origin"`
+	Keycloak          struct {
+		// PublicURL is the authentication hostname, such as https://auth.example.test, which names
+		// the realm's issuer and its authorization endpoint (ADR 0064).
+		PublicURL string `yaml:"public_url"`
+		// InternalURL is Keycloak's internal address, such as https://keycloak:8443, of its token
+		// and keys endpoints, which Identity configures statically, without discovery.
+		InternalURL string `yaml:"internal_url"`
+		Realm       string `yaml:"realm"`
+		// ClientID is the client through which Identity signs browsers in, and ClientSecretFile
+		// holds its secret.
+		ClientID         string `yaml:"client_id"`
+		ClientSecretFile string `yaml:"client_secret_file"`
+	} `yaml:"keycloak"`
 }
 
 func validate(s settings) error {
@@ -72,6 +92,12 @@ func validate(s settings) error {
 		{"database.password_file", s.Database.PasswordFile},
 		{"signing_keys.internal", s.SigningKeys.Internal},
 		{"signing_keys.workload", s.SigningKeys.Workload},
+		{"application_origin", s.ApplicationOrigin},
+		{"keycloak.public_url", s.Keycloak.PublicURL},
+		{"keycloak.internal_url", s.Keycloak.InternalURL},
+		{"keycloak.realm", s.Keycloak.Realm},
+		{"keycloak.client_id", s.Keycloak.ClientID},
+		{"keycloak.client_secret_file", s.Keycloak.ClientSecretFile},
 	} {
 		if setting.value == "" {
 			return fmt.Errorf("%s is required", setting.name)
@@ -204,7 +230,12 @@ func serve(ctx context.Context, args []string, out io.Writer) int {
 	})
 	values := store.Current().Values
 
-	tlsConfig, err := serverTLS(values)
+	authority, err := readPool(values.TLS.Authority)
+	if err != nil {
+		logger.Error("the certificate authority was refused", "error", err)
+		return 1
+	}
+	tlsConfig, err := serverTLS(values, authority)
 	if err != nil {
 		logger.Error("the TLS files were refused", "error", err)
 		return 1
@@ -217,10 +248,28 @@ func serve(ctx context.Context, args []string, out io.Writer) int {
 	defer database.Close()
 	go migrate(ctx, database, logger)
 	keys := signing.NewKeys(values.SigningKeys.Internal, values.SigningKeys.Workload)
+	authorizationServer := keycloak.New(keycloak.Settings{
+		PublicURL:        values.Keycloak.PublicURL,
+		InternalURL:      values.Keycloak.InternalURL,
+		Realm:            values.Keycloak.Realm,
+		ClientID:         values.Keycloak.ClientID,
+		ClientSecretFile: values.Keycloak.ClientSecretFile,
+		RedirectURL:      strings.TrimSuffix(values.ApplicationOrigin, "/") + callbackPath,
+		// Identity trusts only the installation's certificate authority (ADR 0039).
+		Client: &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: authority}}, Timeout: keycloakTimeout},
+	})
 
 	router := httpapi.New(func() (string, string) {
 		snapshot := store.Current()
 		return snapshot.Revision, snapshot.Digest
+	}, httpapi.UseCases{
+		SignIn: signin.Service{
+			Attempts: database.Attempts(), Keycloak: authorizationServer, Principals: database.Principals(),
+			Sessions: database.Sessions(), Now: time.Now,
+		},
+		Admission: admission.Service{Sessions: database.Sessions(), Tokens: keys, Now: time.Now},
+		KeySet:    tokens.KeySet{Signer: keys},
+		Logger:    logger,
 	},
 		// Readiness says that Identity can decide admission (design section 12).
 		health.Check{Name: "database", Required: true, Run: database.Check},
@@ -252,6 +301,13 @@ func serve(ctx context.Context, args []string, out io.Writer) int {
 	return 0
 }
 
+// callbackPath is the path of the contract's operation completeSignIn, the one redirect address of the
+// client identity in the realm.
+const callbackPath = "/api/identity/v1/session/callback"
+
+// keycloakTimeout bounds each call to Keycloak.
+const keycloakTimeout = 5 * time.Second
+
 // migrationRetry is how long an instance waits before it tries its migrations again.
 const migrationRetry = 2 * time.Second
 
@@ -277,12 +333,8 @@ func migrate(ctx context.Context, database *postgres.Database, logger *slog.Logg
 // serverTLS serves Identity's certificate and asks every caller for a client certificate, which it
 // verifies against the installation's certificate authority when one is presented. Only the
 // authentication endpoint requires one (design section 12).
-func serverTLS(s settings) (*tls.Config, error) {
+func serverTLS(s settings, authority *x509.CertPool) (*tls.Config, error) {
 	certificate, err := tls.LoadX509KeyPair(s.TLS.Certificate, s.TLS.Key)
-	if err != nil {
-		return nil, err
-	}
-	authority, err := readPool(s.TLS.Authority)
 	if err != nil {
 		return nil, err
 	}
