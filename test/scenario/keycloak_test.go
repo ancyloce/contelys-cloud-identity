@@ -421,7 +421,6 @@ func (k *keycloak) createAccount(t *testing.T, address string, extra map[string]
 // page that Keycloak shows next.
 func (k *keycloak) signIn(t *testing.T, address, password string) string {
 	t.Helper()
-	browser := k.browser(t)
 	verifier := rand.Text() + rand.Text()
 	challenge := sha256.Sum256([]byte(verifier))
 	start := "https://" + authenticationHostname + "/realms/" + realmName + "/protocol/openid-connect/auth?" + url.Values{
@@ -429,7 +428,36 @@ func (k *keycloak) signIn(t *testing.T, address, password string) string {
 		"state": {rand.Text()}, "nonce": {rand.Text()},
 		"code_challenge": {base64.RawURLEncoding.EncodeToString(challenge[:])}, "code_challenge_method": {"S256"},
 	}.Encode()
-	page := browse(t, browser, http.MethodGet, start, nil)
+	answer, page := k.signInAt(t, start, address, password)
+	if answer.StatusCode != http.StatusOK {
+		t.Fatalf("Keycloak answered the sign-in %d %s", answer.StatusCode, page)
+	}
+	return page
+}
+
+// authorize signs address in at Keycloak with password from location, the authorization request that
+// Identity's sign-in route redirected to, and returns the callback to Identity that Keycloak redirects
+// the browser to.
+func (k *keycloak) authorize(t *testing.T, location, address, password string) *url.URL {
+	t.Helper()
+	answer, page := k.signInAt(t, location, address, password)
+	callback, err := url.Parse(answer.Header.Get("Location"))
+	if answer.StatusCode != http.StatusFound || err != nil || callback.Scheme+"://"+callback.Host+callback.Path != callbackURL {
+		t.Fatalf("Keycloak answered the sign-in %d, Location %q, %s; want a redirect to %s",
+			answer.StatusCode, answer.Header.Get("Location"), page, callbackURL)
+	}
+	return callback
+}
+
+// signInAt opens location, Keycloak's authorization endpoint, in a new browser and submits address and
+// password on Keycloak's sign-in page, and returns Keycloak's answer to the form.
+func (k *keycloak) signInAt(t *testing.T, location, address, password string) (*http.Response, string) {
+	t.Helper()
+	browser := k.browser(t)
+	answer, page := browse(t, browser, http.MethodGet, location, nil)
+	if answer.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s answered %d %s", location, answer.StatusCode, page)
+	}
 	form := regexp.MustCompile(`<form[^>]*id="kc-form-login"[^>]*>`).FindString(page)
 	action := regexp.MustCompile(`action="([^"]*)"`).FindStringSubmatch(form)
 	if action == nil {
@@ -439,8 +467,9 @@ func (k *keycloak) signIn(t *testing.T, address, password string) string {
 		url.Values{"username": {address}, "password": {password}, "credentialId": {""}})
 }
 
-// browse sends one request of browser, with form when it is not nil, and returns the page of a 200.
-func browse(t *testing.T, browser *http.Client, method, address string, form url.Values) string {
+// browse sends one request of browser, with form when it is not nil, and returns the answer with its
+// page.
+func browse(t *testing.T, browser *http.Client, method, address string, form url.Values) (*http.Response, string) {
 	t.Helper()
 	var body io.Reader
 	if form != nil {
@@ -462,10 +491,7 @@ func browse(t *testing.T, browser *http.Client, method, address string, form url
 	if err != nil {
 		t.Fatal(err)
 	}
-	if answer.StatusCode != http.StatusOK {
-		t.Fatalf("%s %s answered %d %s", method, address, answer.StatusCode, page)
-	}
-	return string(page)
+	return answer, string(page)
 }
 
 // browser is a person's browser on the authentication hostname. It reaches Keycloak through the mapped

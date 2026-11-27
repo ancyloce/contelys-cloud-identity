@@ -69,3 +69,13 @@ func TestAnInstanceWithoutItsSigningKeysIsNotReady(t *testing.T) {
 	in.write(t, internalSigningKey, fixture.SigningKey(t))
 	instance.becomesReady(t, "with both keys")
 }
+
+// Only sign-in needs the secret of the client identity, so an instance without it still starts and is
+// ready, because it can decide admission (design section 12).
+func TestAnInstanceWithoutKeycloaksSecretIsReady(t *testing.T) {
+	in := newInputs(t, sharedPostgres.create(t))
+	in.remove(t, keycloakSecret)
+	instance := startIdentity(t, in)
+
+	instance.becomesReady(t, "without the secret of the client identity")
+}
