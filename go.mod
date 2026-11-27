@@ -5,6 +5,8 @@ go 1.27.0
 require (
 	github.com/ancyloce/contelys-cloud-contracts v0.1.0
 	github.com/ancyloce/contelys-cloud-libs-service v0.1.0
+	github.com/coreos/go-oidc/v3 v3.21.0
+	github.com/go-jose/go-jose/v4 v4.1.9
 	github.com/google/go-cmp v0.7.0
 	github.com/jackc/pgx/v5 v5.13.0
 	github.com/moby/moby/api v1.56.1
@@ -15,6 +17,7 @@ require (
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.45.0
 	go.opentelemetry.io/otel/trace v1.47.0
 	go.yaml.in/yaml/v3 v3.0.6
+	golang.org/x/oauth2 v0.38.0
 )
 
 require (
