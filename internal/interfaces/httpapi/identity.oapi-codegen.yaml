@@ -1,0 +1,12 @@
+# The server stubs of Identity's contract, openapi/identity/openapi.yaml, on the standard library's
+# router (Identity ADR 0009).
+package: gen
+output: gen/identity.gen.go
+generate:
+  models: true
+  std-http-server: true
+# The contract's problem body refers to the shared one. oapi-codegen needs a mapping to load that
+# reference, and then merges its fields into IdentityProblem, so no type of the shared file is
+# referenced and none is generated.
+import-mapping:
+  ../shared/problem.yaml: "-"
