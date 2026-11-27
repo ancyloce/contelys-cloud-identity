@@ -25,16 +25,16 @@ type Router struct {
 
 // New returns a router that serves GET /livez, GET /readyz and GET /revision outside any trace, to
 // callers with or without a client certificate, and every operation of Identity's contract. applied
-// reports the revision and digest of the configuration in force, and checks are Identity's signals
-// of readiness.
-func New(applied func() (revision, digest string), checks ...health.Check) *Router {
+// reports the revision and digest of the configuration in force, useCases are what the operations
+// call, and checks are Identity's signals of readiness.
+func New(applied func() (revision, digest string), useCases UseCases, checks ...health.Check) *Router {
 	probes := health.Handler(applied, checks...)
 	mux := http.NewServeMux()
 	for _, probe := range []string{"/livez", "/readyz", "/revision"} {
 		mux.Handle("GET "+probe, probes)
 	}
 	router := &Router{mux: mux}
-	gen.HandlerWithOptions(operations{}, gen.StdHTTPServerOptions{BaseRouter: router, ErrorHandlerFunc: invalidParameter})
+	gen.HandlerWithOptions(operations{useCases}, gen.StdHTTPServerOptions{BaseRouter: router, ErrorHandlerFunc: invalidParameter})
 	return router
 }
 
