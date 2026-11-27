@@ -17,3 +17,29 @@ type Principal struct {
 	Address          pgtype.Text
 	LimitKey         string
 }
+
+type Session struct {
+	Digest       []byte
+	ID           string
+	PrincipalID  string
+	LoginSession string
+	SignedInAt   pgtype.Timestamptz
+	LastSeenAt   pgtype.Timestamptz
+	EndedAt      pgtype.Timestamptz
+	EndCause     pgtype.Text
+}
+
+type SignInAttempt struct {
+	StateDigest  []byte
+	CookieDigest []byte
+	Verifier     string
+	Nonce        string
+	ReturnPath   string
+	ExpiresAt    pgtype.Timestamptz
+}
+
+type SubjectLink struct {
+	Issuer      string
+	Subject     string
+	PrincipalID string
+}

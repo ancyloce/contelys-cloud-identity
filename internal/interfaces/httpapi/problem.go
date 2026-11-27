@@ -11,9 +11,13 @@ import (
 
 // The one title of each code that Identity answers so far. A code keeps its title (ADR 0054).
 const (
-	unavailableTitle    = "The service cannot complete the request now."
-	notPermittedTitle   = "The caller may not call this operation."
-	invalidRequestTitle = "The request does not match the contract."
+	unavailableTitle       = "The service cannot complete the request now."
+	notPermittedTitle      = "The caller may not call this operation."
+	invalidRequestTitle    = "The request does not match the contract."
+	sessionRequiredTitle   = "The request needs a live session."
+	invalidReturnPathTitle = "The return path is not a path of the application."
+	signInFailedTitle      = "The sign-in failed."
+	notActiveTitle         = "The principal may not use the application."
 )
 
 // idLimit is the most characters that the problem body gives requestId and correlationId.

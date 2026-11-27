@@ -25,13 +25,6 @@ func TestOnlyTheAuthenticationEndpointRequiresEdgesCertificate(t *testing.T) {
 	instance := startIdentity(t, newInputs(t, sharedPostgres.create(t)))
 	_, _, edge := ca.Issue(t, "edge")
 	_, _, notifications := ca.Issue(t, "notifications")
-	forwarded := http.Header{
-		"X-Forwarded-Method": {http.MethodGet},
-		"X-Forwarded-Proto":  {"https"},
-		"X-Forwarded-Host":   {"app.example.test"},
-		"X-Forwarded-Uri":    {"/api/projects/v1/projects"},
-		"X-Request-Id":       {"request-1"},
-	}
 
 	for _, caller := range []struct {
 		name        string
@@ -40,12 +33,12 @@ func TestOnlyTheAuthenticationEndpointRequiresEdgesCertificate(t *testing.T) {
 		{"a caller without a certificate", nil},
 		{"a caller with a certificate named notifications", &notifications},
 	} {
-		answer, body := instance.do(t, http.MethodGet, authenticationPath, forwarded, caller.certificate)
+		answer, body := instance.do(t, http.MethodGet, authenticationPath, forwarded(), caller.certificate)
 		if !refused(answer, body) {
 			t.Errorf("%s: GET %s answered %d %q, want 403 operation_not_permitted", caller.name, authenticationPath, answer.StatusCode, body)
 		}
 	}
-	if answer, body := instance.do(t, http.MethodGet, authenticationPath, forwarded, &edge); refused(answer, body) {
+	if answer, body := instance.do(t, http.MethodGet, authenticationPath, forwarded(), &edge); refused(answer, body) {
 		t.Errorf("Edge: GET %s was refused: %d %q", authenticationPath, answer.StatusCode, body)
 	}
 

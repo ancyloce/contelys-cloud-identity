@@ -155,6 +155,7 @@ const (
 	internalSigningKey  = "secrets/internal-signing-key.pem"
 	workloadSigningKey  = "secrets/workload-signing-key.pem"
 	databasePassword    = "secrets/database-password"
+	keycloakSecret      = "secrets/keycloak-client-secret"
 	identityCertificate = "tls/identity.crt"
 	identityKey         = "tls/identity.key"
 	trustStore          = "tls/ca.crt"
@@ -171,6 +172,8 @@ func newInputs(t *testing.T, databaseURL string) *inputs {
 	in.write(t, databasePassword, []byte(password+"\n"))
 	in.write(t, internalSigningKey, fixture.SigningKey(t))
 	in.write(t, workloadSigningKey, fixture.SigningKey(t))
+	// A scenario that signs in replaces the secret with the one that the realm gives the client identity.
+	in.write(t, keycloakSecret, []byte(rand.Text()))
 	in.write(t, configFile, []byte(fmt.Sprintf(`revision: %s
 listen: ":8443"
 tls:
@@ -183,8 +186,16 @@ database:
 signing_keys:
   internal: %[2]s/%[8]s
   workload: %[2]s/%[9]s
+application_origin: %[10]s
+keycloak:
+  public_url: https://%[11]s
+  internal_url: https://%[12]s:8443
+  realm: %[13]s
+  client_id: %[14]s
+  client_secret_file: %[2]s/%[15]s
 `, revision, inputsDir, identityCertificate, identityKey, trustStore, databaseURL, databasePassword,
-		internalSigningKey, workloadSigningKey)))
+		internalSigningKey, workloadSigningKey, applicationOrigin, authenticationHostname, keycloakName, realmName,
+		identityClientID, keycloakSecret)))
 	return in
 }
 
@@ -425,3 +436,35 @@ func contains(s string, parts ...string) bool {
 	}
 	return true
 }
+
+// forwarded is what Edge sends Identity's authentication endpoint about the request it authenticates
+// (design section 05), with a request ID of its own.
+func forwarded() http.Header {
+	return http.Header{
+		"X-Forwarded-Method": {http.MethodGet},
+		"X-Forwarded-Proto":  {"https"},
+		"X-Forwarded-Host":   {"app.example.test"},
+		"X-Forwarded-Uri":    {"/api/projects/v1/projects"},
+		"X-Request-Id":       {"request-" + rand.Text()},
+	}
+}
+
+// authenticate calls the authentication endpoint as Edge does for a request on an authenticated route:
+// with Edge's certificate and the forwarded headers, and with the browser's session cookie when cookie
+// is not empty. It returns the request ID that it sent with the answer.
+func (i *identity) authenticate(t *testing.T, cookie string) (requestID string, answer *http.Response, body []byte) {
+	t.Helper()
+	_, _, edge := ca.Issue(t, "edge")
+	header := forwarded()
+	if cookie != "" {
+		header.Set("Cookie", sessionCookie+"="+cookie)
+	}
+	answer, body = i.do(t, http.MethodGet, authenticationPath, header, &edge)
+	return header.Get("X-Request-Id"), answer, body
+}
+
+// The cookies of a browser at Identity (design section 04).
+const (
+	sessionCookie = "__Host-session"
+	signInCookie  = "__Host-sign-in"
+)
