@@ -1,0 +1,12 @@
+# sqlc reads the migrations as the schema and the queries beside them, and generates the query code
+# under gen/ (layout standard, "Go"; Identity ADR 0009).
+version: "2"
+sql:
+  - engine: postgresql
+    schema: internal/infrastructure/postgres/migrations
+    queries: internal/infrastructure/postgres/queries
+    gen:
+      go:
+        package: gen
+        out: internal/infrastructure/postgres/gen
+        sql_package: pgx/v5

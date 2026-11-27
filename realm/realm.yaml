@@ -1,0 +1,253 @@
+# The application realm of Contelys (Identity's design, section 09; Identity ADR 0001). This play
+# applies the settings that the Identity team owns, with the modules of the collection
+# middleware_automation.keycloak called directly, and makes no raw call to the Admin API (T03 of
+# Identity's plan). The scenarios run it from the Ansible image of test/scenario/ansible/, and every
+# installation runs it from the tooling image of its set (ADR 0058). A second run changes nothing.
+#
+# The platform team's deployment mounts two paths of this directory into every Keycloak server:
+# themes/contelys at themes/contelys, and password-blacklists/common-passwords.txt at
+# data/password-blacklists/common-passwords.txt, both under Keycloak's home directory. Without the list
+# Keycloak refuses the password policy.
+#
+# An installation gives these variables:
+#   keycloak_url                  Keycloak's internal address, such as https://keycloak:8443
+#   keycloak_admin_username       an administrator of the master realm, whom the platform team holds
+#   keycloak_admin_password_file  the file that holds that administrator's password
+#   application_origin            the application origin, such as https://app.example.test
+#   back_channel_logout_url       Identity's operation receiveBackChannelLogout on Edge's internal
+#                                 listener, such as https://edge:9444/identity/internal/v1/back-channel-logout
+#   identity_client_secret_file   the secret of the client identity, which Identity reads from its own copy
+#   admin_client_secret_file      the secret of the client identity-admin, whose service account
+#                                 Identity uses on the Admin API
+#   smtp                          the installation's one SMTP setting, which Notifications shares: host,
+#                                 port, from, and tls, which is starttls, implicit, or plain to allow
+#                                 plain SMTP explicitly; and username and password_file when the server
+#                                 requires a sign-in
+#
+# The play verifies Keycloak's certificate against the installation's certificate authority, which the
+# environment variable SSL_CERT_FILE names (ADR 0039).
+- name: Apply the application realm
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    # The realm's name, which its issuer and every subject link carry.
+    realm: contelys
+    # The theme of themes/, for the login pages and the emails, and the list of passwords of
+    # password-blacklists/. The list holds the 122,472 entries of 15 to 128 characters, the lengths
+    # that the policy lets through, of Passwords/Common-Credentials/Pwdb_top-10000000.txt of SecLists
+    # at its commit 01bd31a91d11025e37c776b01edfe61c58dba784, under MIT, whose notice is
+    # password-blacklists/LICENSE-SecLists. They are lowercased, because Keycloak compares without
+    # case, and each appears once, in the order of that list.
+    theme: contelys
+    password_list: common-passwords.txt
+    # The client through which Identity signs a browser in, and the client of the Admin API.
+    identity_client: identity
+    admin_client: identity-admin
+    # The user profile: the address, which is the username and only an administrator may change, and
+    # one required attribute, name, in place of Keycloak's first and last name.
+    profile_attributes:
+      - name: username
+        displayName: ${username}
+        validations:
+          length: {min: 3, max: 255}
+          username_prohibited_characters: {}
+          up_username_not_idn_homograph: {}
+        permissions: {view: [admin, user], edit: [admin]}
+        multivalued: false
+      - name: email
+        displayName: ${email}
+        validations:
+          email: {}
+          length: {max: 255}
+        required: {roles: [user]}
+        permissions: {view: [admin, user], edit: [admin]}
+        multivalued: false
+      - name: name
+        displayName: Name
+        validations:
+          length: {min: 1, max: 255}
+          person_name_prohibited_characters: {}
+        required: {roles: [user]}
+        permissions: {view: [admin, user], edit: [admin, user]}
+        multivalued: false
+    profile_groups:
+      - name: user-metadata
+        displayHeader: User metadata
+        displayDescription: Attributes, which refer to user metadata
+
+  module_defaults:
+    group/middleware_automation.keycloak.keycloak:
+      auth_keycloak_url: "{{ keycloak_url }}"
+      auth_realm: master
+      auth_client_id: admin-cli
+      auth_username: "{{ keycloak_admin_username }}"
+      auth_password: "{{ lookup('ansible.builtin.file', keycloak_admin_password_file) }}"
+      validate_certs: true
+
+  tasks:
+    - name: The SMTP setting names one way of TLS
+      ansible.builtin.assert:
+        that: smtp.tls in ['starttls', 'implicit', 'plain']
+        fail_msg: smtp.tls is starttls, implicit or plain, and plain allows plain SMTP explicitly
+
+    - name: The realm
+      middleware_automation.keycloak.keycloak_realm:
+        id: "{{ realm }}"
+        realm: "{{ realm }}"
+        enabled: true
+        # Sign-in with the address, which is the username and cannot be changed.
+        registration_email_as_username: true
+        login_with_email_allowed: true
+        duplicate_emails_allowed: false
+        edit_username_allowed: false
+        # Identity registers people (Identity ADR 0002), so Keycloak's own form is off, and its page
+        # for a forgotten password is on.
+        registration_allowed: false
+        reset_password_allowed: true
+        remember_me: false
+        # NIST SP 800-63B-4 for a password that is the only factor: a length, no rule on kinds of
+        # characters, no expiry, no history, and a list of common and breached passwords.
+        password_policy: "length(15) and maxLength(128) and notUsername and notEmail and passwordBlacklist({{ password_list }})"
+        # Edge's design depends on brute-force detection, which locks an account.
+        brute_force_protected: true
+        login_theme: "{{ theme }}"
+        email_theme: "{{ theme }}"
+        # Identity discards Keycloak's tokens (Identity ADR 0005), so they live one minute. The link of
+        # an action email keeps Keycloak's default of 12 hours.
+        access_token_lifespan: 60
+        action_token_generated_by_admin_lifespan: 43200
+        # Keycloak writes these on a realm's first update, so the play sets them at its creation and
+        # its second run changes nothing: client sessions follow the realm's sessions, and the SCIM
+        # API stays off.
+        client_session_idle_timeout: 0
+        client_session_max_lifespan: 0
+        client_offline_session_idle_timeout: 0
+        client_offline_session_max_lifespan: 0
+        attributes:
+          scimApiEnabled: "false"
+        prune_undefined_realm_attributes: false
+        smtp_server: >-
+          {{ {'host': smtp.host, 'port': smtp.port | string, 'from': smtp.from,
+              'ssl': (smtp.tls == 'implicit') | string | lower,
+              'starttls': (smtp.tls == 'starttls') | string | lower,
+              'auth': (smtp.username is defined) | string | lower}
+             | combine({'user': smtp.username, 'password': lookup('ansible.builtin.file', smtp.password_file)}
+                       if smtp.username is defined else {}) }}
+        state: present
+
+    - name: The user profile
+      middleware_automation.keycloak.keycloak_userprofile:
+        parent_id: "{{ realm }}"
+        provider_id: declarative-user-profile
+        config:
+          kc_user_profile_config:
+            - attributes: "{{ profile_attributes }}"
+              groups: "{{ profile_groups }}"
+        state: present
+
+    - name: The client identity, through which Identity signs a browser in
+      middleware_automation.keycloak.keycloak_client:
+        realm: "{{ realm }}"
+        client_id: "{{ identity_client }}"
+        name: Identity
+        protocol: openid-connect
+        # Confidential, with the authorization-code flow and PKCE alone (ADR 0051).
+        public_client: false
+        client_authenticator_type: client-secret
+        secret: "{{ lookup('ansible.builtin.file', identity_client_secret_file) }}"
+        standard_flow_enabled: true
+        implicit_flow_enabled: false
+        direct_access_grants_enabled: false
+        service_accounts_enabled: false
+        authorization_services_enabled: false
+        bearer_only: false
+        consent_required: false
+        full_scope_allowed: false
+        redirect_uris: ["{{ application_origin }}/api/identity/v1/session/callback"]
+        web_origins: []
+        # Keycloak's link back to the application points at the application origin, not at the
+        # authentication hostname (ADR 0064).
+        base_url: "{{ application_origin }}"
+        # Keycloak tells Identity when a login session ends, by the login session's identifier.
+        frontchannel_logout: false
+        backchannel_logout_url: "{{ back_channel_logout_url }}"
+        attributes:
+          pkce.code.challenge.method: S256
+          backchannel.logout.session.required: "true"
+          backchannel.logout.revoke.offline.tokens: "false"
+          oauth2.device.authorization.grant.enabled: "false"
+          oidc.ciba.grant.enabled: "false"
+          # Identity discards Keycloak's tokens (Identity ADR 0005), so none of them refreshes.
+          use.refresh.tokens: "false"
+        # The ID token carries the subject, the address and the name, and nothing else of the realm.
+        client_scopes_behavior: idempotent
+        default_client_scopes: [basic, email]
+        optional_client_scopes: []
+        protocol_mappers:
+          - name: name
+            protocol: openid-connect
+            protocolMapper: oidc-usermodel-attribute-mapper
+            config:
+              user.attribute: name
+              claim.name: name
+              jsonType.label: String
+              id.token.claim: "true"
+              access.token.claim: "false"
+              userinfo.token.claim: "false"
+              introspection.token.claim: "false"
+        state: present
+
+    - name: The client identity-admin, whose service account Identity uses on the Admin API
+      middleware_automation.keycloak.keycloak_client:
+        realm: "{{ realm }}"
+        client_id: "{{ admin_client }}"
+        name: Identity's service account
+        protocol: openid-connect
+        public_client: false
+        client_authenticator_type: client-secret
+        secret: "{{ lookup('ansible.builtin.file', admin_client_secret_file) }}"
+        standard_flow_enabled: false
+        implicit_flow_enabled: false
+        direct_access_grants_enabled: false
+        service_accounts_enabled: true
+        authorization_services_enabled: false
+        bearer_only: false
+        consent_required: false
+        frontchannel_logout: false
+        # Keycloak 26.8.2 refuses an Admin API call whose token lacks the audience of kc-admin-api.
+        client_scopes_behavior: idempotent
+        default_client_scopes: [basic, service_account, kc-admin-api]
+        optional_client_scopes: []
+        state: present
+
+    - name: The service account manages and views the realm's accounts and login sessions
+      middleware_automation.keycloak.keycloak_user_rolemapping:
+        realm: "{{ realm }}"
+        client_id: realm-management
+        service_account_user_client_id: "{{ admin_client }}"
+        roles:
+          - name: manage-users
+          - name: view-users
+        state: present
+
+    # Keycloak gives every account the realm's default role, a composite of offline_access,
+    # uma_authorization and the roles of the account console. The service account holds nothing but
+    # its two roles of realm-management.
+    - name: The service account holds no realm role
+      middleware_automation.keycloak.keycloak_user_rolemapping:
+        realm: "{{ realm }}"
+        service_account_user_client_id: "{{ admin_client }}"
+        roles:
+          - name: default-roles-{{ realm }}
+        state: absent
+
+    # Keycloak creates the public client admin-cli in every realm with the password grant, which the
+    # realm does not allow (design section 04). The play itself signs in through the master realm's.
+    - name: The realm's own admin-cli allows no password grant
+      middleware_automation.keycloak.keycloak_client:
+        realm: "{{ realm }}"
+        client_id: admin-cli
+        direct_access_grants_enabled: false
+        state: present
